@@ -1,4 +1,3 @@
-# --- Archivos sensibles ---
 uploads/
 data/
 *.csv
@@ -6,7 +5,6 @@ data/
 *.xls
 *.xlsm
 
-# --- Archivos de Python ---
 __pycache__/
 *.py[cod]
 *.pyo
@@ -14,12 +12,10 @@ __pycache__/
 *.pkl
 *.joblib
 
-# --- Virtualenv ---
 .venv/
 env/
 venv/
 
-# --- Configuración local ---
 *.log
 .DS_Store
 *.swp
@@ -27,10 +23,8 @@ venv/
 .idea/
 .vscode/
 
-# --- Streamlit cache ---
 .streamlit/
 
-# --- Archivos temporales ---
 *.tmp
 *.bak
 *.old
