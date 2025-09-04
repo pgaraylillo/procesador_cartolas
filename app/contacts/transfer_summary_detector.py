@@ -73,23 +73,21 @@ class ContactsManager:
             raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
 
         try:
-            # Leer el archivo completo sin headers para analizar la estructura
-            df_raw_no_header = pd.read_excel(file_path, dtype=str, header=None)
-
-            self.logger.info(f"Excel cargado sin headers: {len(df_raw_no_header)} filas")
-
-            # Buscar la fila que contiene los headers reales
-            header_row = self._find_header_row_advanced(df_raw_no_header)
-
-            if header_row is not None:
-                self.logger.info(f"Headers encontrados en fila: {header_row}")
-                # Leer nuevamente con la fila correcta como header
-                df_raw = pd.read_excel(file_path, dtype=str, header=header_row)
-            else:
-                # Fallback: intentar leer normalmente
+            # Intentar leer el archivo Excel - puede tener múltiples hojas
+            # Primero intentamos leer la primera hoja
+            try:
                 df_raw = pd.read_excel(file_path, dtype=str, header=0)
+            except:
+                # Si falla, intentamos con diferentes opciones
+                df_raw = pd.read_excel(file_path, dtype=str, header=None)
+                # Buscar la fila que contiene los headers
+                header_row = self._find_header_row(df_raw)
+                if header_row is not None:
+                    df_raw = pd.read_excel(file_path, dtype=str, header=header_row)
+                else:
+                    raise ValueError("No se pudo encontrar una fila de encabezados válida")
 
-            self.logger.info(f"Columnas detectadas: {list(df_raw.columns)}")
+            self.logger.info(f"Excel cargado: {len(df_raw)} filas, columnas: {list(df_raw.columns)}")
 
             # Detectar automáticamente columnas de RUT y nombre específicas para transferencias bancarias
             rut_col, name_col = self._detect_bank_transfer_columns(df_raw)
@@ -98,25 +96,13 @@ class ContactsManager:
                 # Fallback a detección genérica
                 rut_col, name_col = self._detect_rut_and_name_columns(df_raw)
 
-            # Último intento: si las columnas son genéricas como "Histórico de Transferencias.X"
-            # intentar encontrar las columnas por posición basándose en patrones conocidos
             if not rut_col or not name_col:
-                rut_col, name_col = self._detect_columns_by_content_analysis(df_raw)
-
-            if not rut_col or not name_col:
-                # Último intento: mostrar filas de muestra para debug
-                sample_rows = []
-                for i in range(min(5, len(df_raw_no_header))):
-                    sample_rows.append(f"Fila {i}: {list(df_raw_no_header.iloc[i].dropna())}")
-
                 available_columns = list(df_raw.columns)
-                error_msg = (
-                        f"No se pudieron detectar columnas de RUT y nombre automáticamente.\n"
-                        f"Columnas disponibles: {available_columns}\n"
-                        f"Primeras filas del archivo:\n" + "\n".join(sample_rows[:3]) +
-                        f"\nBusque columnas que contengan 'Rut Titular Destino' y 'Nombre Titular Destino'."
+                raise ValueError(
+                    f"No se pudieron detectar columnas de RUT y nombre automáticamente.\n"
+                    f"Columnas disponibles: {available_columns}\n"
+                    f"Busque columnas que contengan RUT y nombres en el archivo."
                 )
-                raise ValueError(error_msg)
 
             # Extraer y limpiar datos
             df_contacts = pd.DataFrame()
@@ -163,73 +149,16 @@ class ContactsManager:
             self.logger.error(f"Error cargando contactos desde Excel: {e}")
             raise
 
-    def _find_header_row_advanced(self, df: pd.DataFrame) -> Optional[int]:
-        """Busca la fila que contiene los encabezados de columnas de manera avanzada"""
-        for i in range(min(15, len(df))):  # Buscar en las primeras 15 filas
-            row_values = df.iloc[i].astype(str).str.lower().fillna('')
-            row_text = ' '.join(row_values)
-
-            # Buscar indicadores específicos de headers de transferencias bancarias
-            bank_transfer_keywords = [
-                'rut titular destino',
-                'nombre titular destino',
-                'numero transaccion',
-                'fecha creacion',
-                'banco destino',
-                'monto'
-            ]
-
-            # Contar cuántos keywords aparecen en esta fila
-            keyword_count = sum(1 for keyword in bank_transfer_keywords if keyword in row_text)
-
-            # Si encuentra al menos 3 keywords, probablemente es la fila de headers
-            if keyword_count >= 3:
+    def _find_header_row(self, df: pd.DataFrame) -> Optional[int]:
+        """Busca la fila que contiene los encabezados de columnas"""
+        for i in range(min(10, len(df))):  # Buscar en las primeras 10 filas
+            row_values = df.iloc[i].astype(str).str.lower()
+            # Buscar indicadores de que es una fila de headers
+            if any(keyword in ' '.join(row_values) for keyword in [
+                'rut', 'titular', 'nombre', 'destino', 'transaccion', 'fecha', 'monto'
+            ]):
                 return i
-
-            # También buscar patrones más generales
-            general_keywords = ['rut', 'titular', 'destino', 'nombre', 'transaccion', 'fecha', 'monto']
-            general_count = sum(1 for keyword in general_keywords if keyword in row_text)
-
-            if general_count >= 5:
-                return i
-
         return None
-
-    def _detect_columns_by_content_analysis(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
-        """Detecta columnas por análisis de contenido cuando los headers son genéricos"""
-        rut_col = None
-        name_col = None
-
-        self.logger.info("Iniciando análisis de contenido para detectar columnas...")
-
-        # Analizar cada columna para encontrar patrones de RUT y nombres
-        for col in df.columns:
-            try:
-                # Obtener datos no nulos de la columna
-                sample_data = df[col].dropna().astype(str).head(50)  # Más muestras para mejor análisis
-
-                if len(sample_data) == 0:
-                    continue
-
-                # Verificar si parece contener RUTs
-                if not rut_col and self._looks_like_rut_column(sample_data):
-                    rut_col = col
-                    self.logger.info(f"Columna RUT detectada por contenido: {col}")
-
-                # Verificar si parece contener nombres
-                if not name_col and self._looks_like_name_column(sample_data):
-                    name_col = col
-                    self.logger.info(f"Columna Nombre detectada por contenido: {col}")
-
-                # Si ya encontramos ambas, podemos parar
-                if rut_col and name_col:
-                    break
-
-            except Exception as e:
-                self.logger.warning(f"Error analizando columna {col}: {e}")
-                continue
-
-        return rut_col, name_col
 
     def _detect_bank_transfer_columns(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
         """Detecta específicamente las columnas de transferencias bancarias"""
@@ -242,8 +171,7 @@ class ContactsManager:
             'RUT Titular Destino',
             'rut titular destino',
             'Rut_Titular_Destino',
-            'RUT_TITULAR_DESTINO',
-            'RUT TITULAR DESTINO'
+            'RUT_TITULAR_DESTINO'
         ]
 
         # Primero buscar coincidencias exactas
@@ -255,13 +183,11 @@ class ContactsManager:
         # Si no encuentra exacta, buscar que contenga las palabras clave
         if not rut_col:
             for col in df.columns:
-                col_clean = str(col).strip().lower()
-                if (('rut' in col_clean or 'run' in col_clean) and
-                        'titular' in col_clean and
-                        'destino' in col_clean):
+                col_lower = str(col).lower()
+                if ('rut' in col_lower and 'titular' in col_lower and 'destino' in col_lower):
                     # Verificar que la columna contenga datos que parezcan RUTs
-                    sample_data = df[col].dropna().astype(str).head(20)
-                    if len(sample_data) > 0 and self._looks_like_rut_column(sample_data):
+                    sample_data = df[col].dropna().astype(str).head(10)
+                    if self._looks_like_rut_column(sample_data):
                         rut_col = col
                         break
 
@@ -271,8 +197,7 @@ class ContactsManager:
             'NOMBRE Titular Destino',
             'nombre titular destino',
             'Nombre_Titular_Destino',
-            'NOMBRE_TITULAR_DESTINO',
-            'NOMBRE TITULAR DESTINO'
+            'NOMBRE_TITULAR_DESTINO'
         ]
 
         # Primero buscar coincidencias exactas
@@ -284,18 +209,13 @@ class ContactsManager:
         # Si no encuentra exacta, buscar que contenga las palabras clave
         if not name_col:
             for col in df.columns:
-                col_clean = str(col).strip().lower()
-                if ('nombre' in col_clean and
-                        'titular' in col_clean and
-                        'destino' in col_clean):
+                col_lower = str(col).lower()
+                if ('nombre' in col_lower and 'titular' in col_lower and 'destino' in col_lower):
                     # Verificar que la columna contenga texto que parezca nombres
-                    sample_data = df[col].dropna().astype(str).head(20)
-                    if len(sample_data) > 0 and self._looks_like_name_column(sample_data):
+                    sample_data = df[col].dropna().astype(str).head(10)
+                    if self._looks_like_name_column(sample_data):
                         name_col = col
                         break
-
-        # Log para debug
-        self.logger.info(f"Detección bancaria - RUT: {rut_col}, Nombre: {name_col}")
 
         return rut_col, name_col
 
@@ -335,37 +255,15 @@ class ContactsManager:
 
         # Contar cuántas entradas parecen RUTs
         rut_like_count = 0
-        total_valid_entries = 0
-
         for value in sample_data:
             value_str = str(value).strip()
+            # Buscar patrones que parezcan RUTs (más flexibles)
+            if re.search(r'\d{7,8}[-.]?[0-9kK]', value_str) or re.search(r'\d{1,2}\.\d{3}\.\d{3}[-.]?[0-9kK]',
+                                                                         value_str):
+                rut_like_count += 1
 
-            # Saltar valores obvios que no son RUTs
-            if value_str.lower() in ['nan', 'null', '', 'none']:
-                continue
-
-            total_valid_entries += 1
-
-            # Buscar patrones que parezcan RUTs (más flexibles y específicos)
-            patterns = [
-                r'\d{7,8}[-.]?[0-9kK]',  # Formato básico: 12345678-9 o 12345678K
-                r'\d{1,2}\.\d{3}\.\d{3}[-.]?[0-9kK]',  # Formato con puntos: 12.345.678-9
-                r'^\d{7,8}[0-9kK]$',  # Sin separadores: 123456789
-            ]
-
-            if any(re.search(pattern, value_str, re.IGNORECASE) for pattern in patterns):
-                # Verificación adicional: debe tener longitud apropiada
-                clean_value = re.sub(r'[.\s-]', '', value_str)
-                if 8 <= len(clean_value) <= 9:  # RUT chileno típico
-                    rut_like_count += 1
-
-        # Si no hay entradas válidas, retornar False
-        if total_valid_entries == 0:
-            return False
-
-        # Si al menos el 40% parece RUT, es probable que sea la columna correcta
-        # (reducido el umbral porque algunos archivos pueden tener pocos datos)
-        return (rut_like_count / total_valid_entries) >= 0.4
+        # Si al menos el 50% parece RUT, es probable que sea la columna correcta
+        return (rut_like_count / len(sample_data)) >= 0.5
 
     def _looks_like_name_column(self, sample_data: pd.Series) -> bool:
         """Verifica si una muestra de datos parece contener nombres"""
@@ -373,36 +271,16 @@ class ContactsManager:
             return False
 
         name_like_count = 0
-        total_valid_entries = 0
-
         for value in sample_data:
             str_value = str(value).strip()
-
-            # Saltar valores obvios que no son nombres
-            if str_value.lower() in ['nan', 'null', '', 'none'] or len(str_value) < 3:
-                continue
-
-            total_valid_entries += 1
-
-            # Buscar características de nombres
-            conditions = [
-                len(str_value) >= 5,  # Longitud mínima razonable
-                len(str_value) <= 100,  # Longitud máxima razonable
-                ' ' in str_value,  # Debe tener espacios (nombre y apellido)
-                re.search(r'[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]', str_value),  # Debe tener letras
-                not re.search(r'^\d+$', str_value),  # No debe ser solo números
-                not re.search(r'^[0-9.-]+$', str_value),  # No debe ser solo números y símbolos
-            ]
-
-            # Si cumple la mayoría de condiciones, probablemente es un nombre
-            if sum(conditions) >= 4:
+            # Buscar características de nombres: longitud, espacios, letras
+            if (len(str_value) > 3 and
+                    len(str_value) < 100 and
+                    str_value not in ['nan', 'NaN', 'null', 'NULL', ''] and
+                    re.search(r'[a-zA-ZáéíóúÁÉÍÓÚñÑ]', str_value)):
                 name_like_count += 1
 
-        # Si no hay entradas válidas, retornar False
-        if total_valid_entries == 0:
-            return False
-
-        return (name_like_count / total_valid_entries) >= 0.5
+        return (name_like_count / len(sample_data)) >= 0.6
 
     def _generate_alias(self, nombre_completo: str) -> str:
         """Genera un alias corto a partir del nombre completo"""
