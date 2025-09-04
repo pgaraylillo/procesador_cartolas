@@ -641,10 +641,22 @@ def show_financial_dashboard(df):
 
 @safe_component_operation('datastore', 'gestión de contactos')
 def page_contacts(datastore):
-    """Página de gestión de contactos"""
+    """Página de gestión de contactos con sistema mejorado"""
+
+    # Intentar usar el sistema mejorado primero
+    try:
+        from contacts.enhanced_contacts_interface import show_transfer_summary_page
+        show_transfer_summary_page(datastore)
+        return
+
+    except ImportError:
+        st.warning("⚠️ Sistema mejorado no disponible, usando sistema básico")
+
+    # Fallback al sistema original
     try:
         from contacts.contacts_manager import show_contacts_management_page
         show_contacts_management_page(datastore)
+
     except ImportError:
         st.error("❌ Sistema de contactos no disponible")
         st.info("🔧 Módulo de contactos no instalado correctamente")
@@ -652,7 +664,7 @@ def page_contacts(datastore):
         # Mostrar instrucciones de instalación
         with st.expander("📝 Instrucciones de instalación"):
             st.markdown("""
-            **Para habilitar el sistema de contactos:**
+            **Para habilitar el sistema de contactos mejorado:**
 
             1. Crear directorio:
             ```bash
@@ -662,16 +674,217 @@ def page_contacts(datastore):
             2. Crear los archivos necesarios:
             - `app/contacts/__init__.py`
             - `app/contacts/contacts_manager.py`
+            - `app/contacts/transfer_summary_detector.py`
+            - `app/contacts/enhanced_contacts_interface.py`
 
             3. Ejecutar prueba del sistema:
             ```bash
-            python test_contacts_system.py
+            python test_transfer_detector.py
             ```
             """)
+
     except Exception as e:
         st.error(f"❌ Error en gestión de contactos: {e}")
         handle_component_error('datastore', e)
 
+
+# 2. MEJORAR LA FUNCIÓN show_transaction_preview PARA USAR EL NUEVO SISTEMA
+def show_transaction_preview(df_parsed):
+    """Muestra preview de transacciones con mejora automática de descripciones"""
+    if df_parsed.empty:
+        st.warning("⚠️ No hay transacciones para mostrar")
+        return
+
+    try:
+        # NUEVO: Opción para mejorar descripciones automáticamente
+        col_enhance1, col_enhance2 = st.columns([3, 1])
+
+        with col_enhance1:
+            improve_descriptions = st.checkbox(
+                "🔄 Mejorar descripciones con nombres de contactos",
+                value=True,
+                help="Reemplaza RUTs en las descripciones por nombres de contactos"
+            )
+
+        with col_enhance2:
+            if st.button("👥 Gestionar Contactos"):
+                st.session_state.page = "contacts"
+                st.rerun()
+
+        # Aplicar mejoras si está habilitado
+        df_display = df_parsed.copy()
+
+        if improve_descriptions:
+            try:
+                # Obtener el datastore desde los componentes
+                datastore, status = get_component('datastore')
+
+                if status == ComponentStatus.READY and datastore:
+                    # USAR EL SISTEMA MEJORADO
+                    try:
+                        from contacts.transfer_summary_detector import ImprovedContactsManager
+                        enhanced_manager = ImprovedContactsManager(datastore)
+
+                        with st.spinner("✨ Mejorando descripciones con sistema avanzado..."):
+                            df_display = enhanced_manager.enhance_transaction_descriptions(df_display)
+
+                    except ImportError:
+                        # Fallback al sistema original
+                        from contacts.contacts_manager import ContactsManager
+                        contacts_manager = ContactsManager(datastore)
+
+                        with st.spinner("🔄 Mejorando descripciones..."):
+                            df_display = contacts_manager.enhance_transaction_descriptions(df_display)
+
+                    # Contar cuántas descripciones se mejoraron
+                    if 'Descripción_Original' in df_display.columns:
+                        improved_count = sum(
+                            1 for orig, new in zip(df_parsed['Descripción'], df_display['Descripción'])
+                            if orig != new
+                        )
+                        if improved_count > 0:
+                            st.success(f"✨ {improved_count} descripciones mejoradas con nombres de contactos")
+
+            except Exception as e:
+                st.warning(f"⚠️ No se pudieron mejorar descripciones: {e}")
+                df_display = df_parsed.copy()
+
+        # [RESTO DE LA FUNCIÓN PERMANECE IGUAL...]
+        # Métricas principales
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total transacciones", len(df_parsed))
+
+        with col2:
+            gastos = df_parsed[df_parsed['Monto'] < 0] if 'Monto' in df_parsed.columns else pd.DataFrame()
+            st.metric("Gastos (CARGO)", len(gastos))
+
+        with col3:
+            ingresos = df_parsed[df_parsed['Monto'] > 0] if 'Monto' in df_parsed.columns else pd.DataFrame()
+            st.metric("Ingresos (ABONO)", len(ingresos))
+
+        with col4:
+            if 'Monto' in df_parsed.columns:
+                balance = df_parsed['Monto'].sum()
+                balance_fmt = f"${balance:,.0f}".replace(",",
+                                                         ".") if balance >= 0 else f"-${abs(balance):,.0f}".replace(",",
+                                                                                                                    ".")
+                st.metric("Balance Neto", balance_fmt)
+
+        # [RESTO DE LA FUNCIÓN...]
+
+    except Exception as e:
+        st.error(f"❌ Error mostrando preview: {str(e)}")
+
+
+# 3. ACTUALIZAR LA NAVEGACIÓN PARA DESTACAR LAS NUEVAS CARACTERÍSTICAS
+def sidebar_navigation():
+    """Navegación principal en sidebar mejorada"""
+    st.sidebar.title("🧭 Navegación")
+
+    pages = {
+        "📁 Cargar Cartola": "upload",
+        "🏷️ Etiquetar Gastos": "labeling",
+        "🤖 Entrenar IA": "training",
+        "📊 Dashboard": "dashboard",
+        "👥 Gestión Contactos 🆕": "contacts",  # 🆕 DESTACAR NUEVAS CARACTERÍSTICAS
+        "🔄 Integración KAME": "kame",
+        "⚙️ Configuración": "settings"
+    }
+
+    selected_page = st.sidebar.radio("Seleccionar página:", list(pages.keys()))
+
+    # MOSTRAR INFORMACIÓN SOBRE LAS NUEVAS CARACTERÍSTICAS
+    if pages[selected_page] == "contacts":
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🆕 Nuevo Sistema de Contactos")
+        st.sidebar.success("✅ Detección automática de resúmenes")
+        st.sidebar.success("✅ Eliminación inteligente de duplicados")
+        st.sidebar.success("✅ Consolidación de múltiples transferencias")
+        st.sidebar.info("💡 Sube un Excel del banco para probar")
+
+    # [RESTO DE LA FUNCIÓN PERMANECE IGUAL...]
+    return pages[selected_page]
+
+
+# 4. AÑADIR FUNCIÓN HELPER PARA MOSTRAR ESTADO DEL SISTEMA DE CONTACTOS
+def show_contacts_system_status():
+    """Muestra estado del sistema de contactos en el sidebar"""
+
+    try:
+        # Verificar sistema mejorado
+        from contacts.transfer_summary_detector import ImprovedContactsManager
+        from contacts.enhanced_contacts_interface import show_transfer_summary_page
+
+        st.sidebar.success("🚀 Sistema avanzado disponible")
+
+        # Mostrar estadísticas básicas si hay datastore
+        try:
+            datastore, status = get_component('datastore')
+            if status == ComponentStatus.READY:
+                contacts = datastore.get_contacts()
+                if contacts:
+                    st.sidebar.info(f"👥 {len(contacts)} contactos registrados")
+                else:
+                    st.sidebar.info("👥 Sin contactos registrados")
+        except:
+            pass
+
+    except ImportError:
+        try:
+            # Verificar sistema básico
+            from contacts.contacts_manager import show_contacts_management_page
+            st.sidebar.warning("⚠️ Solo sistema básico disponible")
+
+        except ImportError:
+            st.sidebar.error("❌ Sistema de contactos no disponible")
+
+
+# 5. INTEGRAR EN LA FUNCIÓN PRINCIPAL main()
+def main():
+    """Función principal mejorada"""
+    try:
+        # Inicializar estado de la sesión
+        initialize_session_state()
+
+        # Header principal
+        main_header()
+
+        # Navegación y contenido
+        current_page = sidebar_navigation()
+
+        # MOSTRAR ESTADO DEL SISTEMA DE CONTACTOS
+        if current_page == "contacts":
+            show_contacts_system_status()
+
+        # Mostrar página seleccionada con manejo robusto
+        try:
+            if current_page == "upload":
+                page_upload()
+            elif current_page == "labeling":
+                page_labeling()
+            elif current_page == "training":
+                page_training()
+            elif current_page == "dashboard":
+                page_dashboard()
+            elif current_page == "contacts":  # PÁGINA MEJORADA
+                page_contacts()
+            elif current_page == "kame":
+                page_kame()
+            elif current_page == "settings":
+                page_settings()
+
+        except Exception as e:
+            st.error(f"❌ Error en página {current_page}: {str(e)}")
+            st.info("🔄 Intenta recargar la página o reiniciar los componentes")
+
+            with st.expander("🔍 Detalles técnicos"):
+                st.code(traceback.format_exc())
+
+    except Exception as e:
+        st.error(f"❌ Error crítico de la aplicación: {str(e)}")
+        st.stop()
 
 def page_kame():
     """Página KAME simplificada"""
